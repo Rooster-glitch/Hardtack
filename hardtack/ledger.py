@@ -143,3 +143,74 @@ def prune(self, before_timestamp: str) -> int:
 
     print(f"Pruned {len(archived)} entries. Archive saved to {archive_file}")
     return len(archived)
+
+
+def prune(self, before_timestamp: str) -> int:
+    """Archives entries older than the timestamp and resets the active chain."""
+    entries = self.get_entries()
+    if not entries:
+        return 0
+
+    archived = []
+    active = []
+
+    for e in entries:
+        if e["timestamp"] < before_timestamp:
+            archived.append(e)
+        else:
+            active.append(e)
+
+    if not archived:
+        print("No entries match the prune criteria.")
+        return 0
+
+    # 1. Save the archive
+    archive_dir = self.root / "archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archive_file = archive_dir / f"entries_archive_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.jsonl"
+    
+    with archive_file.open("w", encoding="utf-8") as f:
+        for e in archived:
+            f.write(json.dumps(e, sort_keys=True) + "\n")
+
+    # 2. Create the new Genesis Checkpoint
+    last_archived_hash = archived[-1]["hash"]
+    checkpoint = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "role": "system",
+        "content": f"CHECKPOINT: Pruned {len(archived)} entries. Archive: {archive_file.name}",
+        "metadata": {"archive_file": str(archive_file.name), "last_archived_hash": last_archived_hash},
+        "prev_hash": last_archived_hash # Links the new chain to the old chain's head
+    }
+    checkpoint["hash"] = self._hash(checkpoint)
+    active.insert(0, checkpoint)
+
+    # 3. Rewrite the active ledger
+    with self.jsonl_path.open("w", encoding="utf-8") as f:
+        for e in active:
+            f.write(json.dumps(e, sort_keys=True) + "\n")
+
+    print(f"Pruned {len(archived)} entries. Archive saved to {archive_file}")
+    return len(archived)
+
+def verify(self) -> bool:
+    entries = self.get_entries()
+    if not entries:
+        return True
+    
+    prev = "0" * 64
+    for i, entry in enumerate(entries):
+        # Allow the first entry to be a Checkpoint linked to an archive
+        if i == 0 and entry.get("role") == "system" and "CHECKPOINT" in entry.get("content", ""):
+            if entry.get("prev_hash") != entry.get("metadata", {}).get("last_archived_hash"):
+                return False
+        else:
+            if entry.get("prev_hash") != prev:
+                return False
+        
+        hash_copy = dict(entry)
+        stored_hash = hash_copy.pop("hash")
+        if self._hash(hash_copy) != stored_hash:
+            return False
+        prev = stored_hash
+    return True
